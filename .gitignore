@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.claude/
+dividend_history.csv
