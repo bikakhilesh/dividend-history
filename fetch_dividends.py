@@ -20,7 +20,10 @@ import time
 from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://www.sharesansar.com/proposed-dividend"
-PAGE_SIZE = 100
+# The endpoint silently rejects requests for more than ~50 rows per page
+# (returns HTTP 202 with an empty result set instead of an error), so keep
+# this at or below 50.
+PAGE_SIZE = 50
 REQUEST_DELAY_SECONDS = 0.8
 OUTPUT_FILE = "dividend_history.csv"
 
