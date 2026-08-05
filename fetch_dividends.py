@@ -1,8 +1,9 @@
 """Fetch NEPSE proposed-dividend history from ShareSansar and write it to one CSV.
 
-Pulls every fiscal year (2057/2058 onward) from the site's DataTables AJAX
-endpoint at https://www.sharesansar.com/proposed-dividend and combines all
-rows into a single dividend_history.csv.
+Pulls only the most recent RECENT_YEARS_COUNT fiscal years (dividends for
+older years don't change) from the site's DataTables AJAX endpoint at
+https://www.sharesansar.com/proposed-dividend, then merges them into the
+existing dividend_history.csv, leaving rows for older fiscal years as-is.
 
 Plain HTTP requests (requests/curl) to this endpoint are silently throttled
 to empty results from datacenter IP ranges, including GitHub Actions
@@ -26,11 +27,28 @@ BASE_URL = "https://www.sharesansar.com/proposed-dividend"
 PAGE_SIZE = 50
 REQUEST_DELAY_SECONDS = 0.8
 OUTPUT_FILE = "dividend_history.csv"
+RECENT_YEARS_COUNT = 3
+
+CSV_HEADER = [
+    "Symbol",
+    "Company",
+    "Bonus (%)",
+    "Cash (%)",
+    "Total (%)",
+    "Announcement Date",
+    "Book Closure Date",
+    "Distribution Date",
+    "Bonus Listing Date",
+    "Fiscal Year",
+]
 
 # Fiscal-year select option values -> labels, as served by the site's
-# "Fiscal Year Wise" tab. The site adds one new entry per Nepali fiscal
-# year (mid-July); re-check the <select id="year"> options on the page
-# if a year is missing.
+# "Fiscal Year Wise" tab, newest first. The site adds one new entry per
+# Nepali fiscal year (mid-July); re-check the <select id="year"> options
+# on the page if a year is missing. Only the first RECENT_YEARS_COUNT
+# entries are actually scraped each run (see main()); the rest is kept
+# around so dividend_history.csv's older rows can still be labeled/cross
+# -checked if ever needed.
 FISCAL_YEARS = {
     31: "2081/2082",
     30: "2080/2081",
@@ -154,9 +172,34 @@ def fetch_year(page, year_id, year_label):
     return rows
 
 
-def main():
-    all_rows = []
+def _to_csv_row(row):
+    return [
+        strip_tags(row.get("symbol")),
+        strip_tags(row.get("companyname")),
+        row.get("bonus_share") or "",
+        row.get("cash_dividend") or "",
+        row.get("total_dividend") or "",
+        row.get("announcement_date") or "",
+        row.get("bookclose_date") or "",
+        row.get("distribution_date") or "",
+        row.get("bonus_listing_date") or "",
+        row.get("year") or "",
+    ]
 
+
+def _load_existing_rows():
+    try:
+        with open(OUTPUT_FILE, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except FileNotFoundError:
+        return []
+
+
+def main():
+    scrape_years = dict(list(FISCAL_YEARS.items())[:RECENT_YEARS_COUNT])
+    scraped_labels = set(scrape_years.values())
+
+    fresh_rows = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(
@@ -169,48 +212,36 @@ def main():
         # session/referer, same as a person browsing the site.
         page.goto(BASE_URL, wait_until="domcontentloaded")
 
-        for year_id, year_label in FISCAL_YEARS.items():
+        for year_id, year_label in scrape_years.items():
             try:
-                all_rows.extend(fetch_year(page, year_id, year_label))
+                fresh_rows.extend(fetch_year(page, year_id, year_label))
             except Exception as exc:
                 print(f"  {year_label}: failed ({exc})", file=sys.stderr)
             time.sleep(REQUEST_DELAY_SECONDS)
 
         browser.close()
 
+    # Keep existing rows for fiscal years we didn't re-scrape this run;
+    # replace rows for the years we just fetched.
+    kept_rows = [
+        row
+        for row in _load_existing_rows()
+        if row.get("Fiscal Year") not in scraped_labels
+    ]
+
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Symbol",
-                "Company",
-                "Bonus (%)",
-                "Cash (%)",
-                "Total (%)",
-                "Announcement Date",
-                "Book Closure Date",
-                "Distribution Date",
-                "Bonus Listing Date",
-                "Fiscal Year",
-            ]
-        )
-        for row in all_rows:
-            writer.writerow(
-                [
-                    strip_tags(row.get("symbol")),
-                    strip_tags(row.get("companyname")),
-                    row.get("bonus_share") or "",
-                    row.get("cash_dividend") or "",
-                    row.get("total_dividend") or "",
-                    row.get("announcement_date") or "",
-                    row.get("bookclose_date") or "",
-                    row.get("distribution_date") or "",
-                    row.get("bonus_listing_date") or "",
-                    row.get("year") or "",
-                ]
-            )
+        writer.writerow(CSV_HEADER)
+        for row in fresh_rows:
+            writer.writerow(_to_csv_row(row))
+        for row in kept_rows:
+            writer.writerow([row.get(col, "") for col in CSV_HEADER])
 
-    print(f"Wrote {len(all_rows)} rows to {OUTPUT_FILE}", file=sys.stderr)
+    print(
+        f"Wrote {len(fresh_rows)} fresh rows ({', '.join(scraped_labels)}) "
+        f"+ {len(kept_rows)} kept rows to {OUTPUT_FILE}",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":
