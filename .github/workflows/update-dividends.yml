@@ -21,11 +21,13 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - run: playwright install --with-deps chromium
+
       - run: python fetch_dividends.py
 
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dividend_history.csv
+          git add -f dividend_history.csv
           git diff --cached --quiet || git commit -m "Update dividend history"
           git push

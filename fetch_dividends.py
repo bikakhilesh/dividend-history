@@ -3,18 +3,25 @@
 Pulls every fiscal year (2057/2058 onward) from the site's DataTables AJAX
 endpoint at https://www.sharesansar.com/proposed-dividend and combines all
 rows into a single dividend_history.csv.
+
+Plain HTTP requests (requests/curl) to this endpoint are silently throttled
+to empty results from datacenter IP ranges, including GitHub Actions
+runners. Issuing the same fetch() call from inside a real headless-browser
+page (matching what the site's own JS does) gets through reliably, so this
+script drives Playwright instead of calling requests directly.
 """
 
 import csv
+import json
 import re
 import sys
 import time
 
-import requests
+from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://www.sharesansar.com/proposed-dividend"
 PAGE_SIZE = 100
-REQUEST_DELAY_SECONDS = 1.5
+REQUEST_DELAY_SECONDS = 0.8
 OUTPUT_FILE = "dividend_history.csv"
 
 # Fiscal-year select option values -> labels, as served by the site's
@@ -49,16 +56,6 @@ FISCAL_YEARS = {
     22: "2057/2058",
 }
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Referer": BASE_URL,
-}
-
 TAG_RE = re.compile(r"<[^>]+>")
 
 # Column definitions the site's DataTables JS sends with every request.
@@ -78,33 +75,29 @@ _COLUMNS = [
 ]
 
 
-def _build_params(start, year_id):
+def _build_query(start, year_id):
     # Key order matches the DataTables JS the site itself sends
     # (draw, columns[], order[], start, length, search, type, year, sector).
-    # The endpoint silently returns an empty result set if the params
-    # arrive in a different order.
-    params = {"draw": 1}
+    params = [("draw", 1)]
     for i, (data, name, searchable, orderable) in enumerate(_COLUMNS):
-        params[f"columns[{i}][data]"] = data
-        params[f"columns[{i}][name]"] = name
-        params[f"columns[{i}][searchable]"] = "true" if searchable else "false"
-        params[f"columns[{i}][orderable]"] = "true" if orderable else "false"
-        params[f"columns[{i}][search][value]"] = ""
-        params[f"columns[{i}][search][regex]"] = "false"
-    params.update(
-        {
-            "order[0][column]": 6,
-            "order[0][dir]": "desc",
-            "start": start,
-            "length": PAGE_SIZE,
-            "search[value]": "",
-            "search[regex]": "false",
-            "type": "YEARWISE",
-            "year": year_id,
-            "sector": 0,
-        }
-    )
-    return params
+        params.append((f"columns[{i}][data]", data))
+        params.append((f"columns[{i}][name]", name))
+        params.append((f"columns[{i}][searchable]", "true" if searchable else "false"))
+        params.append((f"columns[{i}][orderable]", "true" if orderable else "false"))
+        params.append((f"columns[{i}][search][value]", ""))
+        params.append((f"columns[{i}][search][regex]", "false"))
+    params += [
+        ("order[0][column]", 6),
+        ("order[0][dir]", "desc"),
+        ("start", start),
+        ("length", PAGE_SIZE),
+        ("search[value]", ""),
+        ("search[regex]", "false"),
+        ("type", "YEARWISE"),
+        ("year", year_id),
+        ("sector", 0),
+    ]
+    return "&".join(f"{k}={v}" for k, v in params)
 
 
 def strip_tags(value):
@@ -113,36 +106,39 @@ def strip_tags(value):
     return TAG_RE.sub("", value).strip()
 
 
-MAX_ATTEMPTS = 6
-RETRY_BACKOFF_SECONDS = 5
+MAX_ATTEMPTS = 4
+RETRY_BACKOFF_SECONDS = 3
 
 
-def _get_page(session, start, year_id):
-    """Fetch one page, retrying on non-200 or on an empty result.
+def _fetch_page(page, start, year_id):
+    query = _build_query(start, year_id)
+    js = """
+        async (query) => {
+            const resp = await fetch('%s?' + query, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            return { status: resp.status, body: await resp.text() };
+        }
+    """ % BASE_URL
 
-    The endpoint occasionally responds 202 with an empty record set
-    under request-rate pressure even for years that have data; retrying
-    after a short backoff reliably gets a real 200 response.
-    """
-    params = _build_params(start, year_id)
-    last_payload = None
+    last_payload = {"data": [], "recordsFiltered": 0}
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        resp = session.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
-        if resp.status_code == 200:
-            payload = resp.json()
+        result = page.evaluate(js, query)
+        if result["status"] == 200:
+            payload = json.loads(result["body"])
             if payload.get("recordsFiltered", 0) > 0 or start > 0:
                 return payload
             last_payload = payload
         if attempt < MAX_ATTEMPTS:
             time.sleep(RETRY_BACKOFF_SECONDS * attempt)
-    return last_payload or {"data": [], "recordsFiltered": 0}
+    return last_payload
 
 
-def fetch_year(session, year_id, year_label):
+def fetch_year(page, year_id, year_label):
     rows = []
     start = 0
     while True:
-        payload = _get_page(session, start, year_id)
+        payload = _fetch_page(page, start, year_id)
         data = payload.get("data", [])
         rows.extend(data)
 
@@ -156,15 +152,28 @@ def fetch_year(session, year_id, year_label):
 
 
 def main():
-    session = requests.Session()
     all_rows = []
 
-    for year_id, year_label in FISCAL_YEARS.items():
-        try:
-            all_rows.extend(fetch_year(session, year_id, year_label))
-        except requests.RequestException as exc:
-            print(f"  {year_label}: failed ({exc})", file=sys.stderr)
-        time.sleep(REQUEST_DELAY_SECONDS)
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            )
+        )
+        # Load the real page first so requests carry a normal browser
+        # session/referer, same as a person browsing the site.
+        page.goto(BASE_URL, wait_until="domcontentloaded")
+
+        for year_id, year_label in FISCAL_YEARS.items():
+            try:
+                all_rows.extend(fetch_year(page, year_id, year_label))
+            except Exception as exc:
+                print(f"  {year_label}: failed ({exc})", file=sys.stderr)
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+        browser.close()
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
