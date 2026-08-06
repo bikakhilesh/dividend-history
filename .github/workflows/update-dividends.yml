@@ -2,10 +2,10 @@ name: Update dividend history
 
 on:
   schedule:
-    # 18:15 UTC (~00:00 NPT) on the 1st, 11th, and 21st of each month
+    # 18:15 UTC (~00:00 NPT) on the 1st and 16th of each month
     # (cron has no native "every N days" step across month boundaries,
-    # so this is the closest fit to a ~10-day cadence).
-    - cron: "15 18 1,11,21 * *"
+    # so this is the closest fit to a ~15-day cadence).
+    - cron: "15 18 1,16 * *"
   workflow_dispatch: {}
 
 permissions:
