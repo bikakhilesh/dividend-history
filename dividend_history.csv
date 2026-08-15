@@ -1,7 +1,7 @@
 Symbol,Company,Bonus (%),Cash (%),Total (%),Announcement Date,Book Closure Date,Distribution Date,Bonus Listing Date,Fiscal Year
 RKDHL,R.K.D Holdings Limited,,5.00,5.00,2026-06-19,,,,2081/2082
 UAIL,United Ajod Insurance Limited,4.2857,0.2256,4.5113,2026-06-19,2026-07-03 [Closed],,,2081/2082
-MANDU,Mandu Hydropower Limited,10.00,0.5263,10.5263,2026-06-02,,,,2081/2082
+MANDU,Mandu Hydropower Limited,10.00,0.5263,10.5263,2026-06-02,2026-08-21,,,2081/2082
 ANLB,Aatmanirbhar Laghubitta Bittiya Sanstha Limited,14.25,0.75,15.00,2026-03-26,2026-04-09 [Closed],,,2081/2082
 CIGL,Chandragiri Investment Group Limited,,4.00,4.00,2026-03-22,,,,2081/2082
 PHLTD,Professional Holdings Limited,2.6316,50.00,52.6316,2026-03-19,,,,2081/2082
@@ -358,6 +358,7 @@ NICBF,NIC ASIA Balanced Fund,,9.25,9.25,2024-08-01,2024-09-13 [Closed],,,2080/20
 NICACL,NIC Asia Capital Limited,,52.53,52.53,2024-08-01,,,,2080/2081
 LVF2,Laxmi Value Fund-II,,4.5,4.5,2024-07-30,2024-08-15 [Closed],,,2080/2081
 LUK,Laxmi Unnati Kosh,,7.5,7.5,2024-07-30,2024-08-15 [Closed],,,2080/2081
+KSLY,Kumari Sunaulo Lagani Yojana,,10.5,10.5,2023-08-11,,,,2080/2081
 HLI,Himalayan Life Insurance Limited,14.00,,14.00,2025-01-19,2025-02-07 [Closed],,2025-05-15,2079/2080
 SRLI,Sanima Reliance Life Insurance Limited,18.3811,,18.3811,2024-09-16,2024-09-27 [Closed],,2025-01-19,2079/2080
 PMLI,Prabhu Mahalaxmi Life Insurance Company Limited,10.00,0.526,10.526,2024-08-25,2024-10-02 [Closed],,2024-12-16,2079/2080
