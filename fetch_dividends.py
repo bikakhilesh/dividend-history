@@ -131,20 +131,19 @@ MAX_ATTEMPTS = 4
 RETRY_BACKOFF_SECONDS = 3
 
 
-def _fetch_page(page, start, year_id):
-    query = _build_query(start, year_id)
+def _fetch_page(page, url, query, start):
     js = """
-        async (query) => {
-            const resp = await fetch('%s?' + query, {
+        async ([url, query]) => {
+            const resp = await fetch(url + '?' + query, {
                 headers: { 'X-Requested-With': 'XMLHttpRequest' }
             });
             return { status: resp.status, body: await resp.text() };
         }
-    """ % BASE_URL
+    """
 
     last_payload = {"data": [], "recordsFiltered": 0}
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        result = page.evaluate(js, query)
+        result = page.evaluate(js, [url, query])
         if result["status"] == 200:
             payload = json.loads(result["body"])
             if payload.get("recordsFiltered", 0) > 0 or start > 0:
@@ -155,11 +154,11 @@ def _fetch_page(page, start, year_id):
     return last_payload
 
 
-def fetch_year(page, year_id, year_label):
+def _fetch_all(page, url, query_for_start, label):
     rows = []
     start = 0
     while True:
-        payload = _fetch_page(page, start, year_id)
+        payload = _fetch_page(page, url, query_for_start(start), start)
         data = payload.get("data", [])
         rows.extend(data)
 
@@ -168,8 +167,78 @@ def fetch_year(page, year_id, year_label):
             break
         time.sleep(REQUEST_DELAY_SECONDS)
 
-    print(f"  {year_label}: {len(rows)} rows", file=sys.stderr)
+    print(f"  {label}: {len(rows)} rows", file=sys.stderr)
     return rows
+
+
+def fetch_year(page, year_id, year_label):
+    return _fetch_all(page, BASE_URL, lambda s: _build_query(s, year_id), year_label)
+
+
+# Right shares come from the "Right Share" tab (type=3) of the Existing
+# Issues page. It has no fiscal-year filter and only ~300 rows total, so
+# it's re-scraped in full every run.
+RIGHTS_URL = "https://www.sharesansar.com/existing-issues"
+RIGHTS_OUTPUT_FILE = "right_share_history.csv"
+RIGHTS_CSV_HEADER = [
+    "Symbol",
+    "Company",
+    "Ratio",
+    "Units",
+    "Price",
+    "Opening Date",
+    "Closing Date",
+    "Book Closure Date",
+    "Listing Date",
+    "Issue Manager",
+]
+_RIGHTS_COLUMNS = [
+    "DT_Row_Index", "company.symbol", "company.companyname", "ratio_value",
+    "total_units", "issue_price", "price_range", "cutoff_price",
+    "opening_date", "closing_date", "final_date", "listing_date",
+    "issue_manager", "status", "view", "right_eligibility_link",
+]
+_RIGHTS_SEARCHABLE = {
+    "company.symbol", "company.companyname", "opening_date",
+    "closing_date", "final_date", "listing_date",
+}
+
+
+def _build_rights_query(start):
+    # Same order the site's DataTables JS sends for this table.
+    params = [("draw", 1)]
+    for i, data in enumerate(_RIGHTS_COLUMNS):
+        params.append((f"columns[{i}][data]", data))
+        params.append((f"columns[{i}][name]", ""))
+        params.append((f"columns[{i}][searchable]", "true" if data in _RIGHTS_SEARCHABLE else "false"))
+        params.append((f"columns[{i}][orderable]", "false"))
+        params.append((f"columns[{i}][search][value]", ""))
+        params.append((f"columns[{i}][search][regex]", "false"))
+    params += [
+        ("start", start),
+        ("length", PAGE_SIZE),
+        ("search[value]", ""),
+        ("search[regex]", "false"),
+        ("type", 3),
+    ]
+    return "&".join(f"{k}={v}" for k, v in params)
+
+
+def _to_rights_csv_row(row):
+    company = row.get("company") or {}
+    return [
+        strip_tags(company.get("symbol")),
+        strip_tags(company.get("companyname")),
+        row.get("ratio_value") or "",
+        row.get("total_units") or "",
+        row.get("issue_price") or "",
+        row.get("opening_date") or "",
+        row.get("closing_date") or "",
+        # The Right Share tab labels final_date as "Book Closure Date".
+        row.get("final_date") or "",
+        row.get("listing_date") or "",
+        row.get("issue_manager") or "",
+    ]
 
 
 def _to_csv_row(row):
@@ -219,7 +288,23 @@ def main():
                 print(f"  {year_label}: failed ({exc})", file=sys.stderr)
             time.sleep(REQUEST_DELAY_SECONDS)
 
+        try:
+            rights_rows = _fetch_all(page, RIGHTS_URL, _build_rights_query, "right shares")
+        except Exception as exc:
+            rights_rows = []
+            print(f"  right shares: failed ({exc})", file=sys.stderr)
+
         browser.close()
+
+    # Full replace, but never overwrite existing history with an empty
+    # (blocked/failed) scrape.
+    if rights_rows:
+        with open(RIGHTS_OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(RIGHTS_CSV_HEADER)
+            for row in rights_rows:
+                writer.writerow(_to_rights_csv_row(row))
+        print(f"Wrote {len(rights_rows)} rows to {RIGHTS_OUTPUT_FILE}", file=sys.stderr)
 
     # Keep existing rows for fiscal years we didn't re-scrape this run;
     # replace rows for the years we just fetched.
