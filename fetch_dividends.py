@@ -44,12 +44,12 @@ CSV_HEADER = [
 
 # Fiscal-year select option values -> labels, as served by the site's
 # "Fiscal Year Wise" tab, newest first. The site adds one new entry per
-# Nepali fiscal year (mid-July); re-check the <select id="year"> options
-# on the page if a year is missing. Only the first RECENT_YEARS_COUNT
-# entries are actually scraped each run (see main()); the rest is kept
-# around so dividend_history.csv's older rows can still be labeled/cross
-# -checked if ever needed.
+# Nepali fiscal year (mid-July). main() reads the live <select id="year">
+# options instead (see _fiscal_years), so a new year is picked up on its
+# own -- this list only kicks in if the page's options can't be read.
+# Hard-coding alone silently skipped 2082/2083 from July to September 2026.
 FISCAL_YEARS = {
+    32: "2082/2083",
     31: "2081/2082",
     30: "2080/2081",
     29: "2079/2080",
@@ -264,11 +264,18 @@ def _load_existing_rows():
         return []
 
 
-def main():
-    scrape_years = dict(list(FISCAL_YEARS.items())[:RECENT_YEARS_COUNT])
-    scraped_labels = set(scrape_years.values())
+def _fiscal_years(page):
+    """The page's own fiscal-year options, newest first; FISCAL_YEARS if unreadable."""
+    options = page.eval_on_selector_all(
+        "#year option", "els => els.map(e => [e.value, e.textContent.trim()])"
+    )
+    years = {int(value): label for value, label in options if value.strip().isdigit()}
+    return years or FISCAL_YEARS
 
+
+def main():
     fresh_rows = []
+    scraped_labels = set()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(
@@ -281,9 +288,15 @@ def main():
         # session/referer, same as a person browsing the site.
         page.goto(BASE_URL, wait_until="domcontentloaded")
 
+        scrape_years = dict(list(_fiscal_years(page).items())[:RECENT_YEARS_COUNT])
         for year_id, year_label in scrape_years.items():
             try:
-                fresh_rows.extend(fetch_year(page, year_id, year_label))
+                rows = fetch_year(page, year_id, year_label)
+                fresh_rows.extend(rows)
+                # A year that came back empty (blocked/failed) keeps its
+                # existing rows below instead of being wiped.
+                if rows:
+                    scraped_labels.add(year_label)
             except Exception as exc:
                 print(f"  {year_label}: failed ({exc})", file=sys.stderr)
             time.sleep(REQUEST_DELAY_SECONDS)
