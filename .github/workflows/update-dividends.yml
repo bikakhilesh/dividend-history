@@ -10,8 +10,27 @@ permissions:
   contents: write
 
 jobs:
+  pick-runner:
+    # Use the home server while its heartbeat is fresh; otherwise fall back to GitHub-hosted.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        env:
+          HEARTBEAT: ${{ vars.SERVER_HEARTBEAT }}
+        run: |
+          runner=self-hosted
+          if [[ "$HEARTBEAT" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - HEARTBEAT )) -gt 600 ]; then
+            runner=ubuntu-latest
+          fi
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "Runner: $runner (heartbeat: ${HEARTBEAT:-unset})" >> "$GITHUB_STEP_SUMMARY"
+
   update:
-    runs-on: self-hosted
+    needs: pick-runner
+    runs-on: ${{ needs.pick-runner.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +39,10 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -r requirements.txt
+
+      - name: Playwright system deps (GitHub-hosted fallback only)
+        if: needs.pick-runner.outputs.runner == 'ubuntu-latest'
+        run: sudo env "PATH=$PATH" playwright install-deps chromium
 
       - run: playwright install chromium
 
